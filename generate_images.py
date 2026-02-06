@@ -112,10 +112,13 @@ async def main() -> None:
     exclude_langs = ({x.strip() for x in exclude_langs.split(",")}
                      if exclude_langs else None)
     consider_forked_repos = len(os.getenv("COUNT_STATS_FROM_FORKS")) != 0
+    recent_months_str = os.getenv("RECENT_MONTHS", "6")
+    recent_months = int(recent_months_str) if recent_months_str else None
     async with aiohttp.ClientSession() as session:
         s = Stats(user, access_token, session, exclude_repos=exclude_repos,
                   exclude_langs=exclude_langs,
-                  consider_forked_repos=consider_forked_repos)
+                  consider_forked_repos=consider_forked_repos,
+                  recent_months=recent_months)
         await asyncio.gather(generate_languages(s), generate_overview(s))
 
 

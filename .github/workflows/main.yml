@@ -57,6 +57,7 @@ jobs:
         EXCLUDED: ${{ secrets.EXCLUDED }}
         EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
         COUNT_STATS_FROM_FORKS: ${{ secrets.COUNT_STATS_FROM_FORKS }}
+        RECENT_MONTHS: "6"
 
     # Commits all changed files to the repository
     - name: Commit to the output branch of repo

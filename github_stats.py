@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
@@ -122,6 +123,7 @@ class Queries(object):
       }}
       nodes {{
         nameWithOwner
+        pushedAt
         stargazers {{
           totalCount
         }}
@@ -158,6 +160,7 @@ class Queries(object):
       }}
       nodes {{
         nameWithOwner
+        pushedAt
         stargazers {{
           totalCount
         }}
@@ -233,11 +236,13 @@ class Stats(object):
                  session: aiohttp.ClientSession,
                  exclude_repos: Optional[Set] = None,
                  exclude_langs: Optional[Set] = None,
-                 consider_forked_repos: bool = False):
+                 consider_forked_repos: bool = False,
+                 recent_months: Optional[int] = None):
         self.username = username
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self._consider_forked_repos = consider_forked_repos
+        self._recent_months = recent_months
         self.queries = Queries(username, access_token, session)
 
         self._name = None
@@ -279,7 +284,12 @@ Languages:
         self._languages = dict()
         self._repos = set()
         self._ignored_repos = set()
-        
+
+        if self._recent_months is not None:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=self._recent_months * 30)
+        else:
+            cutoff_date = None
+
         next_owned = None
         next_contrib = None
         while True:
@@ -319,12 +329,23 @@ Languages:
                     self._ignored_repos.add(name)
 
             for repo in repos:
-                name = repo.get("nameWithOwner")
-                if name in self._repos or name in self._exclude_repos:
+                repo_name = repo.get("nameWithOwner")
+                if repo_name in self._repos or repo_name in self._exclude_repos:
                     continue
-                self._repos.add(name)
+                self._repos.add(repo_name)
                 self._stargazers += repo.get("stargazers").get("totalCount", 0)
                 self._forks += repo.get("forkCount", 0)
+
+                # Filter languages by recent activity
+                if cutoff_date is not None:
+                    pushed_at = repo.get("pushedAt")
+                    if pushed_at:
+                        pushed_time = datetime.fromisoformat(
+                            pushed_at.replace("Z", "+00:00"))
+                        if pushed_time < cutoff_date:
+                            continue
+                    else:
+                        continue
 
                 for lang in repo.get("languages", {}).get("edges", []):
                     name = lang.get("node", {}).get("name", "Other")
