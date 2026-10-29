@@ -15,11 +15,15 @@ import requests
 ###############################################################################
 
 class GitHubAPIError(RuntimeError):
-    def __init__(self, status: int, authentication_failed: bool = False):
+    def __init__(self, status: int, authentication_failed: bool = False,
+                 error_types=(), error_fields=()):
         self.status = status
         self.authentication_failed = authentication_failed
+        self.error_types = error_types
+        self.error_fields = error_fields
         super().__init__(f"GitHub API request failed (HTTP {status}); "
-                         "check authentication, permissions and API limits.")
+                         "check authentication, permissions and API limits. "
+                         f"GraphQL types={error_types}, fields={error_fields}")
 
 
 class Queries(object):
@@ -71,7 +75,18 @@ class Queries(object):
                 error.get("type") in ("FORBIDDEN", "UNAUTHORIZED")
                 for error in errors or [] if isinstance(error, dict)
             )
-            raise GitHubAPIError(status, authentication_failed)
+            known_fields = {"viewer", "user", "repositories", "repositoriesContributedTo",
+                            "contributionsCollection", "languages", "contributionYears"}
+            error_types = tuple(sorted({
+                error.get("type") for error in errors or []
+                if isinstance(error, dict) and error.get("type") in
+                {"FORBIDDEN", "UNAUTHORIZED", "RATE_LIMITED", "NOT_FOUND", "INTERNAL"}
+            }))
+            error_fields = tuple(sorted({
+                part for error in errors or [] if isinstance(error, dict)
+                for part in error.get("path", []) if part in known_fields
+            }))
+            raise GitHubAPIError(status, authentication_failed, error_types, error_fields)
         return result
 
     async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
