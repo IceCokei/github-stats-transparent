@@ -10,6 +10,17 @@ import aiohttp
 import requests
 
 
+LANGUAGE_COLORS = {
+    "Python": "#3572A5", "JavaScript": "#f1e05a", "TypeScript": "#3178c6",
+    "HTML": "#e34c26", "CSS": "#563d7c", "Shell": "#89e051",
+    "C": "#555555", "C++": "#f34b7d", "C#": "#178600", "Java": "#b07219",
+    "Go": "#00ADD8", "Rust": "#dea584", "Vue": "#41b883", "Ruby": "#701516",
+    "Swift": "#F05138", "Kotlin": "#A97BFF", "PHP": "#4F5D95",
+    "Jupyter Notebook": "#DA5B0B", "Dart": "#00B4AB", "Dockerfile": "#384d54",
+    "PowerShell": "#012456", "Makefile": "#427819", "Lua": "#000080",
+}
+
+
 ###############################################################################
 # Main Classes
 ###############################################################################
@@ -138,8 +149,7 @@ class Queries(object):
 
     @staticmethod
     def repos_overview(username: str, contrib_cursor: Optional[str] = None,
-                       owned_cursor: Optional[str] = None,
-                       public_only: bool = False) -> str:
+                       owned_cursor: Optional[str] = None) -> str:
         """
         :return: GraphQL query with overview of user repositories
         """
@@ -149,7 +159,6 @@ class Queries(object):
     name,
     repositories(
         first: 100,
-        {"privacy: PUBLIC," if public_only else ""}
         orderBy: {{
             field: UPDATED_AT,
             direction: DESC
@@ -181,7 +190,6 @@ class Queries(object):
     }}
     repositoriesContributedTo(
         first: 100,
-        {"privacy: PUBLIC," if public_only else ""}
         includeUserRepositories: false,
         orderBy: {{
             field: UPDATED_AT,
@@ -324,6 +332,9 @@ Languages:
         """
         Get lots of summary statistics using one big query. Sets many attributes
         """
+        if self._public_only:
+            await self.get_public_stats()
+            return
         self._stargazers = 0
         self._forks = 0
         self._languages = dict()
@@ -340,8 +351,7 @@ Languages:
         while True:
             raw_results = await self.queries.query(
                 Queries.repos_overview(self.username, owned_cursor=next_owned,
-                                       contrib_cursor=next_contrib,
-                                       public_only=self._public_only)
+                                       contrib_cursor=next_contrib)
             )
             raw_results = raw_results if raw_results is not None else {}
             if not (raw_results.get("data") or {}).get("viewer"):
@@ -425,6 +435,62 @@ Languages:
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
             v["prop"] = 100 * (v.get("size", 0) / langs_total)
+
+    async def get_public_stats(self) -> None:
+        """Use public REST endpoints when the workflow token cannot enumerate users' repos."""
+        profile = await self.queries.query_rest(f"/users/{self.username}")
+        if not isinstance(profile, dict) or not profile.get("login"):
+            raise RuntimeError("GitHub returned no public profile for the target user.")
+        self._name = profile.get("name") or profile["login"]
+        self._stargazers = 0
+        self._forks = 0
+        self._repos = set()
+        self._ignored_repos = set()
+        self._languages = {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self._recent_months * 30)
+                  if self._recent_months is not None else None)
+        page = 1
+        language_repos = []
+        while True:
+            repositories = await self.queries.query_rest(
+                f"/users/{self.username}/repos", {"per_page": 100, "page": page,
+                                                  "type": "owner"})
+            if not isinstance(repositories, list):
+                raise RuntimeError("GitHub could not enumerate public repositories.")
+            for repository in repositories:
+                name = repository["full_name"]
+                if (repository.get("fork") or name in self._exclude_repos
+                        or name in self._repos):
+                    continue
+                self._repos.add(name)
+                self._stargazers += repository.get("stargazers_count", 0)
+                self._forks += repository.get("forks_count", 0)
+                pushed_at = repository.get("pushed_at")
+                if cutoff is not None and (not pushed_at or datetime.fromisoformat(
+                        pushed_at.replace("Z", "+00:00")) < cutoff):
+                    continue
+                language_repos.append(name)
+            if len(repositories) < 100:
+                break
+            page += 1
+        languages_by_repo = await asyncio.gather(*(
+            self.queries.query_rest(f"/repos/{name}/languages") for name in language_repos))
+        for languages in languages_by_repo:
+            if not isinstance(languages, dict) or any(type(size) is not int
+                                                     for size in languages.values()):
+                raise RuntimeError("GitHub could not retrieve public repository languages.")
+            for name, size in languages.items():
+                if name in self._exclude_langs:
+                    continue
+                language = self._languages.setdefault(name, {
+                    "size": 0, "occurrences": 0,
+                    "color": LANGUAGE_COLORS.get(name, "#8b949e"),
+                })
+                language["size"] += size
+                language["occurrences"] += 1
+        total = sum(language["size"] for language in self._languages.values())
+        for language in self._languages.values():
+            language["prop"] = 100 * language["size"] / total if total else 0
 
     @property
     async def name(self) -> str:

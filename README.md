@@ -23,7 +23,8 @@ anyone may be able to see the name of one or more private repositories.
 Public statistics and the 31-day contribution charts can use the workflow's
 automatic `GITHUB_TOKEN`. A valid `ACCESS_TOKEN` takes priority and is needed for
 private repository statistics and traffic across your repositories. If it is
-rejected, generation retries with `GITHUB_TOKEN`; inaccessible traffic is shown
+rejected, generation retries for owned public repositories using the REST API
+with `GITHUB_TOKEN`; inaccessible traffic is shown
 as `N/A`. API errors stop generation instead of publishing empty statistics.
 
 The daily workflow also publishes `generated/activity.svg` (light) and

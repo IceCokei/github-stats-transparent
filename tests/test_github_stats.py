@@ -64,10 +64,33 @@ class QueryTests(unittest.IsolatedAsyncioTestCase):
                       Queries.all_contribs(["2026"], "IceCokei")):
             self.assertIn('viewer: user(login: "IceCokei")', query)
 
-    async def test_public_fallback_filters_both_repository_connections(self):
-        self.assertEqual(Queries.repos_overview("IceCokei", public_only=True)
-                         .count("privacy: PUBLIC"), 2)
-        self.assertNotIn("privacy: PUBLIC", Queries.repos_overview("IceCokei"))
+    async def test_public_fallback_uses_rest_and_preserves_filters(self):
+        stats = Stats("IceCokei", "test-placeholder", None, public_only=True,
+                      exclude_repos={"IceCokei/excluded"}, exclude_langs={"CSS"})
+        repositories = [
+            {"full_name": "IceCokei/one", "stargazers_count": 8, "forks_count": 2},
+            {"full_name": "IceCokei/forked", "fork": True},
+            {"full_name": "IceCokei/excluded"},
+        ]
+        stats.queries.query = AsyncMock(side_effect=AssertionError("GraphQL was used"))
+        stats.queries.query_rest = AsyncMock(side_effect=[
+            {"login": "IceCokei", "name": "Coke"}, repositories,
+            {"Python": 30, "HTML": 10, "CSS": 100},
+        ])
+        await stats.get_stats()
+        self.assertEqual(await stats.name, "Coke")
+        self.assertEqual(await stats.stargazers, 8)
+        self.assertEqual(await stats.forks, 2)
+        self.assertEqual(await stats.repos, {"IceCokei/one"})
+        self.assertEqual(await stats.languages_proportional, {"Python": 75, "HTML": 25})
+
+    async def test_public_fallback_rejects_repository_api_errors(self):
+        stats = Stats("IceCokei", "test-placeholder", None, public_only=True)
+        stats.queries.query_rest = AsyncMock(side_effect=[
+            {"login": "IceCokei"}, {"message": "Forbidden"},
+        ])
+        with self.assertRaises(RuntimeError):
+            await stats.get_stats()
 
     async def test_authentication_fallback_preloads_owner_before_rendering(self):
         original = unittest.mock.Mock()
