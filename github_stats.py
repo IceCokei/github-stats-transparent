@@ -138,7 +138,8 @@ class Queries(object):
 
     @staticmethod
     def repos_overview(username: str, contrib_cursor: Optional[str] = None,
-                       owned_cursor: Optional[str] = None) -> str:
+                       owned_cursor: Optional[str] = None,
+                       public_only: bool = False) -> str:
         """
         :return: GraphQL query with overview of user repositories
         """
@@ -148,6 +149,7 @@ class Queries(object):
     name,
     repositories(
         first: 100,
+        {"privacy: PUBLIC," if public_only else ""}
         orderBy: {{
             field: UPDATED_AT,
             direction: DESC
@@ -179,6 +181,7 @@ class Queries(object):
     }}
     repositoriesContributedTo(
         first: 100,
+        {"privacy: PUBLIC," if public_only else ""}
         includeUserRepositories: false,
         orderBy: {{
             field: UPDATED_AT,
@@ -275,12 +278,14 @@ class Stats(object):
                  exclude_repos: Optional[Set] = None,
                  exclude_langs: Optional[Set] = None,
                  consider_forked_repos: bool = False,
-                 recent_months: Optional[int] = None):
+                 recent_months: Optional[int] = None,
+                 public_only: bool = False):
         self.username = username
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
         self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self._consider_forked_repos = consider_forked_repos
         self._recent_months = recent_months
+        self._public_only = public_only
         self.queries = Queries(username, access_token, session)
 
         self._name = None
@@ -335,7 +340,8 @@ Languages:
         while True:
             raw_results = await self.queries.query(
                 Queries.repos_overview(self.username, owned_cursor=next_owned,
-                                       contrib_cursor=next_contrib)
+                                       contrib_cursor=next_contrib,
+                                       public_only=self._public_only)
             )
             raw_results = raw_results if raw_results is not None else {}
             if not (raw_results.get("data") or {}).get("viewer"):

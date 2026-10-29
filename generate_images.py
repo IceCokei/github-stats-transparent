@@ -121,7 +121,8 @@ async def main() -> None:
         s = Stats(user, access_token, session, exclude_repos=exclude_repos,
                   exclude_langs=exclude_langs,
                   consider_forked_repos=consider_forked_repos,
-                  recent_months=recent_months)
+                  recent_months=recent_months,
+                  public_only=not bool(os.getenv("ACCESS_TOKEN")))
         try:
             await s.get_stats()
         except GitHubAPIError as error:
@@ -133,7 +134,7 @@ async def main() -> None:
             s = Stats(user, fallback_token, session, exclude_repos=exclude_repos,
                       exclude_langs=exclude_langs,
                       consider_forked_repos=consider_forked_repos,
-                      recent_months=recent_months)
+                      recent_months=recent_months, public_only=True)
             await s.get_stats()
         await asyncio.gather(generate_languages(s), generate_overview(s),
                              generate_activity(s))

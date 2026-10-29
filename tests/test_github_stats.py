@@ -64,6 +64,11 @@ class QueryTests(unittest.IsolatedAsyncioTestCase):
                       Queries.all_contribs(["2026"], "IceCokei")):
             self.assertIn('viewer: user(login: "IceCokei")', query)
 
+    async def test_public_fallback_filters_both_repository_connections(self):
+        self.assertEqual(Queries.repos_overview("IceCokei", public_only=True)
+                         .count("privacy: PUBLIC"), 2)
+        self.assertNotIn("privacy: PUBLIC", Queries.repos_overview("IceCokei"))
+
     async def test_authentication_fallback_preloads_owner_before_rendering(self):
         original = unittest.mock.Mock()
         original.get_stats = AsyncMock(side_effect=GitHubAPIError(401, True))
@@ -79,6 +84,7 @@ class QueryTests(unittest.IsolatedAsyncioTestCase):
             await generate_images.main()
         self.assertEqual(factory.call_args_list[1].args[:2],
                          ("IceCokei", "fallback-placeholder"))
+        self.assertTrue(factory.call_args_list[1].kwargs["public_only"])
         fallback.get_stats.assert_awaited_once()
         overview.assert_awaited_once_with(fallback)
 
