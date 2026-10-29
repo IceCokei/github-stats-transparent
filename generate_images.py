@@ -6,7 +6,8 @@ import re
 
 import aiohttp
 
-from github_stats import Stats
+from github_stats import GitHubAPIError, Stats
+from activity import generate_activity
 
 
 ################################################################################
@@ -40,7 +41,8 @@ async def generate_overview(s: Stats) -> None:
                     output)
     changed = (await s.lines_changed)[0] + (await s.lines_changed)[1]
     output = re.sub("{{ lines_changed }}", f"{changed:,}", output)
-    output = re.sub("{{ views }}", f"{await s.views:,}", output)
+    views = await s.views
+    output = re.sub("{{ views }}", f"{views:,}" if views is not None else "N/A", output)
     output = re.sub("{{ repos }}", f"{len(await s.all_repos):,}", output)
 
     generate_output_folder()
@@ -100,26 +102,41 @@ async def main() -> None:
     """
     Generate all badges
     """
-    access_token = os.getenv("ACCESS_TOKEN")
+    access_token = os.getenv("ACCESS_TOKEN") or os.getenv("GITHUB_TOKEN")
     if not access_token:
-        # access_token = os.getenv("GITHUB_TOKEN")
-        raise Exception("A personal access token is required to proceed!")
-    user = os.getenv("GITHUB_ACTOR")
+        raise RuntimeError("Set ACCESS_TOKEN or GITHUB_TOKEN to generate statistics.")
+    user = os.getenv("GITHUB_REPOSITORY_OWNER") or os.getenv("GITHUB_ACTOR")
+    if not user:
+        raise RuntimeError("Set GITHUB_REPOSITORY_OWNER or GITHUB_ACTOR.")
     exclude_repos = os.getenv("EXCLUDED")
     exclude_repos = ({x.strip() for x in exclude_repos.split(",")}
                      if exclude_repos else None)
     exclude_langs = os.getenv("EXCLUDED_LANGS")
     exclude_langs = ({x.strip() for x in exclude_langs.split(",")}
                      if exclude_langs else None)
-    consider_forked_repos = len(os.getenv("COUNT_STATS_FROM_FORKS")) != 0
+    consider_forked_repos = bool(os.getenv("COUNT_STATS_FROM_FORKS"))
     recent_months_str = os.getenv("RECENT_MONTHS", "6")
     recent_months = int(recent_months_str) if recent_months_str else None
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         s = Stats(user, access_token, session, exclude_repos=exclude_repos,
                   exclude_langs=exclude_langs,
                   consider_forked_repos=consider_forked_repos,
                   recent_months=recent_months)
-        await asyncio.gather(generate_languages(s), generate_overview(s))
+        try:
+            await s.get_stats()
+        except GitHubAPIError as error:
+            fallback_token = os.getenv("GITHUB_TOKEN")
+            if (not error.authentication_failed or not fallback_token
+                    or fallback_token == access_token):
+                raise
+            print("ACCESS_TOKEN was rejected; retrying public statistics with GITHUB_TOKEN.")
+            s = Stats(user, fallback_token, session, exclude_repos=exclude_repos,
+                      exclude_langs=exclude_langs,
+                      consider_forked_repos=consider_forked_repos,
+                      recent_months=recent_months)
+            await s.get_stats()
+        await asyncio.gather(generate_languages(s), generate_overview(s),
+                             generate_activity(s))
 
 
 if __name__ == "__main__":

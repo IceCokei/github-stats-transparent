@@ -20,9 +20,19 @@ anyone may be able to see the name of one or more private repositories.
 
 ## ⚙️ Installation
 
+Public statistics and the 31-day contribution charts can use the workflow's
+automatic `GITHUB_TOKEN`. A valid `ACCESS_TOKEN` takes priority and is needed for
+private repository statistics and traffic across your repositories. If it is
+rejected, generation retries with `GITHUB_TOKEN`; inaccessible traffic is shown
+as `N/A`. API errors stop generation instead of publishing empty statistics.
+
+The daily workflow also publishes `generated/activity.svg` (light) and
+`generated/activity-dark.svg` (dark) to the `output` branch. These charts do not
+depend on a public image rendering service.
+
 <!-- TODO: Add details and screenshots -->
 
-1. Create a personal access token (not the default GitHub Actions token) using
+1. For private statistics and repository traffic, create a personal access token using
    the instructions
    [here](https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token).
    Personal access token must have permissions: `read:user` and `repo`. Copy

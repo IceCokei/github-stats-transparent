@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import asyncio
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Set, Tuple
@@ -12,6 +13,14 @@ import requests
 ###############################################################################
 # Main Classes
 ###############################################################################
+
+class GitHubAPIError(RuntimeError):
+    def __init__(self, status: int, authentication_failed: bool = False):
+        self.status = status
+        self.authentication_failed = authentication_failed
+        super().__init__(f"GitHub API request failed (HTTP {status}); "
+                         "check authentication, permissions and API limits.")
+
 
 class Queries(object):
     """
@@ -40,16 +49,30 @@ class Queries(object):
             async with self.semaphore:
                 r = await self.session.post("https://api.github.com/graphql",
                                             headers=headers,
-                                            json={"query": generated_query})
-            return await r.json()
-        except:
+                                            json={"query": generated_query},
+                                            timeout=aiohttp.ClientTimeout(total=30))
+                result = await r.json()
+                status = r.status
+                r.release()
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             print("aiohttp failed for GraphQL query")
             # Fall back on non-async requests
             async with self.semaphore:
                 r = requests.post("https://api.github.com/graphql",
                                   headers=headers,
-                                  json={"query": generated_query})
-                return r.json()
+                                  json={"query": generated_query}, timeout=30)
+                result = r.json()
+                status = r.status_code
+
+        errors = result.get("errors") if isinstance(result, dict) else None
+        if (status != 200 or not isinstance(result, dict)
+                or errors or not result.get("data")):
+            authentication_failed = status in (401, 403) or any(
+                error.get("type") in ("FORBIDDEN", "UNAUTHORIZED")
+                for error in errors or [] if isinstance(error, dict)
+            )
+            raise GitHubAPIError(status, authentication_failed)
+        return result
 
     async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
         """
@@ -99,13 +122,13 @@ class Queries(object):
         return dict()
 
     @staticmethod
-    def repos_overview(contrib_cursor: Optional[str] = None,
+    def repos_overview(username: str, contrib_cursor: Optional[str] = None,
                        owned_cursor: Optional[str] = None) -> str:
         """
         :return: GraphQL query with overview of user repositories
         """
         return f"""{{
-  viewer {{
+  viewer: user(login: {json.dumps(username)}) {{
     login,
     name,
     repositories(
@@ -181,18 +204,18 @@ class Queries(object):
 """
 
     @staticmethod
-    def contrib_years() -> str:
+    def contrib_years(username: str) -> str:
         """
         :return: GraphQL query to get all years the user has been a contributor
         """
-        return """
-query {
-  viewer {
-    contributionsCollection {
+        return f"""
+query {{
+  viewer: user(login: {json.dumps(username)}) {{
+    contributionsCollection {{
       contributionYears
-    }
-  }
-}
+    }}
+  }}
+}}
 """
 
     @staticmethod
@@ -213,7 +236,7 @@ query {
 """
 
     @classmethod
-    def all_contribs(cls, years: List[str]) -> str:
+    def all_contribs(cls, years: List[str], username: str) -> str:
         """
         :param years: list of years to get contributions for
         :return: query to retrieve contribution information for all user years
@@ -221,7 +244,7 @@ query {
         by_years = "\n".join(map(cls.contribs_by_year, years))
         return f"""
 query {{
-  viewer {{
+  viewer: user(login: {json.dumps(username)}) {{
     {by_years}
   }}
 }}
@@ -263,6 +286,8 @@ class Stats(object):
             [f"{k}: {v:0.4f}%" for k, v in languages.items()]
         )
         lines_changed = await self.lines_changed
+        views = await self.views
+        formatted_views = f"{views:,}" if views is not None else "N/A"
         return f"""Name: {await self.name}
 Stargazers: {await self.stargazers:,}
 Forks: {await self.forks:,}
@@ -271,7 +296,7 @@ Repositories with contributions: {len(await self.all_repos)}
 Lines of code added: {lines_changed[0]:,}
 Lines of code deleted: {lines_changed[1]:,}
 Lines of code changed: {lines_changed[0] + lines_changed[1]:,}
-Project page views: {await self.views:,}
+Project page views: {formatted_views}
 Languages:
   - {formatted_languages}"""
 
@@ -294,10 +319,12 @@ Languages:
         next_contrib = None
         while True:
             raw_results = await self.queries.query(
-                Queries.repos_overview(owned_cursor=next_owned,
+                Queries.repos_overview(self.username, owned_cursor=next_owned,
                                        contrib_cursor=next_contrib)
             )
             raw_results = raw_results if raw_results is not None else {}
+            if not (raw_results.get("data") or {}).get("viewer"):
+                raise RuntimeError("GitHub returned no statistics for the target user.")
 
             self._name = (raw_results
                           .get("data", {})
@@ -466,12 +493,14 @@ Languages:
             return self._total_contributions
 
         self._total_contributions = 0
-        years = (await self.queries.query(Queries.contrib_years())) \
+        years = (await self.queries.query(Queries.contrib_years(self.username))) \
             .get("data", {}) \
             .get("viewer", {}) \
             .get("contributionsCollection", {}) \
             .get("contributionYears", [])
-        by_year = (await self.queries.query(Queries.all_contribs(years))) \
+        if not years:
+            return 0
+        by_year = (await self.queries.query(Queries.all_contribs(years, self.username))) \
             .get("data", {}) \
             .get("viewer", {}).values()
         for year in by_year:
@@ -508,7 +537,7 @@ Languages:
         return self._lines_changed
 
     @property
-    async def views(self) -> int:
+    async def views(self) -> Optional[int]:
         """
         Note: only returns views for the last 14 days (as-per GitHub API)
         :return: total number of page views the user's projects have received
@@ -519,6 +548,8 @@ Languages:
         total = 0
         for repo in await self.repos:
             r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
+            if "views" not in r:
+                return None
             for view in r.get("views", []):
                 total += view.get("count", 0)
 
